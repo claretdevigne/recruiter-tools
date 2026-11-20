@@ -1,0 +1,19 @@
+# Secretos y variables de entorno
+.env
+.env.*
+!.env.example
+
+# Entorno virtual de Python
+venv/
+.venv/
+
+# Caché y archivos compilados de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Editores y sistema operativo (Linux/VS Code)
+.vscode/
+.idea/
+*.swp
+*~
