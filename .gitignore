@@ -1,19 +1,8 @@
-# Secretos y variables de entorno
 .env
-.env.*
-!.env.example
-
-# Entorno virtual de Python
-venv/
-.venv/
-
-# Caché y archivos compilados de Python
+*credentials.json
+credentials.json
+config_agente.json
+.screenshot*.png
 __pycache__/
-*.py[cod]
-*$py.class
-
-# Editores y sistema operativo (Linux/VS Code)
-.vscode/
-.idea/
-*.swp
-*~
+*.pyc
+venv/

@@ -1,23 +1,78 @@
 import os
 import sys
+import json
 import time
 import pyautogui
 import pyperclip
 
+# Permitir importar desde la raíz del proyecto para consultar AGENTE_DB si hiciera falta
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(BASE_DIR)
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+from googlesheetsapi.functions import listar_hojas_y_pestanas
+
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.1
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMG_ABRIR_RECRUITER = os.path.join(BASE_DIR, "10.png")    # Botón "Abrir en Recruiter" (pestaña 2)
 IMG_GUARDAR_PROYECTO = os.path.join(BASE_DIR, "11.png")   # Botón "Guardar en proyecto" (pestaña 3)
 IMG_PROYECTO_EXISTENTE = os.path.join(BASE_DIR, "12.png") # Radio button "Seleccionar proyecto existente"
 IMG_BOTON_GUARDAR = os.path.join(BASE_DIR, "14.png")      # Botón azul "Guardar" final del modal
 
-NOMBRE_PROYECTO = "Vulnerability engineer"
-
 
 def log(mensaje: str):
     print(mensaje, flush=True)
+
+
+def obtener_proyecto_agente_db() -> str:
+    """
+    Obtiene estrictamente el nombre del proyecto de Recruiter correspondiente al Role activo en AGENTE_DB.
+    Primero revisa el caché local (config_agente.json) y, si está vacío, consulta Google Sheets directamente.
+    """
+    config_path = os.path.join(ROOT_DIR, "config_agente.json")
+    cfg = {}
+
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception as e:
+            log(f"[Aviso] Error leyendo config_agente.json: {e}")
+
+    hoja_activa = cfg.get("hoja_activa", "")
+    role_activo = cfg.get("pestana_activa", "")
+
+    # 1. Intentar leer desde la tabla sincronizada de AGENTE_DB en config_agente.json
+    vacantes_cache = cfg.get("hojas", {}).get(hoja_activa, {}).get("vacantes", {})
+    proyecto = vacantes_cache.get(role_activo, {}).get("proyecto", "").strip()
+    if proyecto:
+        return proyecto
+
+    # 2. Respaldo directo: leer proyecto_recruiter si está presente
+    proyecto_actual = cfg.get("proyecto_recruiter", "").strip()
+    if proyecto_actual:
+        return proyecto_actual
+
+    # 3. Último recurso: consultar AGENTE_DB en vivo desde Google Sheets
+    if hoja_activa and role_activo:
+        log(f"[Config] Consultando AGENTE_DB en vivo para '{role_activo}'...")
+        try:
+            datos_sheets = listar_hojas_y_pestanas()
+            proyecto_vivo = (
+                datos_sheets.get(hoja_activa, {})
+                .get("vacantes", {})
+                .get(role_activo, {})
+                .get("proyecto", "")
+                .strip()
+            )
+            if proyecto_vivo:
+                return proyecto_vivo
+        except Exception as e:
+            log(f"[Error] No se pudo consultar AGENTE_DB en vivo: {e}")
+
+    return ""
 
 
 def buscar_imagen(ruta_imagen: str, confianza: float = 0.7):
@@ -107,9 +162,9 @@ def paso_3_seleccionar_proyecto_existente(ubicacion_11, tiempo_max: int = 20) ->
 # -------------------------------------------------------------------------
 # 4.- Solo teclado: pega el nombre donde ya quedó el cursor y selecciona
 # -------------------------------------------------------------------------
-def paso_4_elegir_proyecto() -> bool:
-    log(f"[Paso 4] INICIO - Pegando '{NOMBRE_PROYECTO}' directamente en el campo enfocado...")
-    pyperclip.copy(NOMBRE_PROYECTO)
+def paso_4_elegir_proyecto(nombre_proyecto: str) -> bool:
+    log(f"[Paso 4] INICIO - Pegando '{nombre_proyecto}' directamente en el campo enfocado...")
+    pyperclip.copy(nombre_proyecto)
     pyautogui.hotkey('ctrl', 'v')
     time.sleep(1.5)
 
@@ -165,6 +220,13 @@ def main() -> bool:
             log(f"ERROR CRÍTICO: Falta el archivo '{ruta}'")
             return False
 
+    nombre_proyecto = obtener_proyecto_agente_db()
+    if not nombre_proyecto:
+        log("ERROR CRÍTICO: No hay ningún proyecto de Recruiter configurado en AGENTE_DB para la pestaña activa. Abortando.")
+        return False
+
+    log(f"[Config AGENTE_DB] Proyecto cargado: '{nombre_proyecto}'")
+
     if not paso_1_abrir_en_recruiter(tiempo_max=30):
         return False
 
@@ -175,7 +237,7 @@ def main() -> bool:
     if not paso_3_seleccionar_proyecto_existente(ubicacion_11, tiempo_max=20):
         return False
 
-    if not paso_4_elegir_proyecto():
+    if not paso_4_elegir_proyecto(nombre_proyecto):
         return False
 
     if not paso_5_guardar_y_cerrar(tiempo_max=15):

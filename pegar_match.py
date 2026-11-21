@@ -2,11 +2,32 @@ import sys
 import pyautogui
 import pyperclip
 import time
+import os
+import gspread
 
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.3
+SHEET_ID = "1IgctcXouhK3QRIO-4LDhf4uTOWV8XuM-M7omzqowF6Y"
+NOMBRE_PESTANA = "Full_Stack_Security"
 
 COLUMNA_MATCH = "B"
+
+def pegar_en_sheets_api(fila):
+    celda_destino = f"{COLUMNA_MATCH}{fila}"
+    valor = pyperclip.paste().strip()
+
+    if not valor or not valor.endswith("%"):
+        print(f"Advertencia: El portapapeles no tiene un porcentaje válido ('{valor}'). No se pegará nada.")
+        sys.exit(1)
+
+    ruta_json = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credentials.json")
+    gc = gspread.service_account(filename=ruta_json)
+    
+    documento = gc.open_by_key(SHEET_ID)
+    hoja = documento.worksheet(NOMBRE_PESTANA)
+    
+    hoja.update_acell(celda_destino, valor)
+    print(f"Escrito '{valor}' en la celda {celda_destino}")  
 
 def pegar_en_sheets(fila):
     celda_destino = f"{COLUMNA_MATCH}{fila}"
@@ -40,4 +61,4 @@ if __name__ == "__main__":
         print("Uso: python pegar_match.py <numero_de_fila>  (Ejemplo: python pegar_match.py 13)")
         sys.exit(1)
 
-    pegar_en_sheets(sys.argv[1])
+    pegar_en_sheets_api(sys.argv[1])

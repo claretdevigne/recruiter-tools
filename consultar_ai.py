@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+import json
 from pathlib import Path
 import pyperclip
 from dotenv import load_dotenv
@@ -10,72 +11,71 @@ from openai import OpenAI
 # Busca la api_key en el .env y lo guarda en una variable
 # -------------------------------------------------------------------------
 
-load_dotenv(dotenv_path=".env")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# -------------------------------------------------------------------------
+# 2.- Lectura dinámica de la JD desde config_agente.json
+# -------------------------------------------------------------------------
+def obtener_jd_activa():
+    config_path = os.path.join(BASE_DIR, "config_agente.json")
+    if not os.path.exists(config_path):
+        print("Error: No se encontró 'config_agente.json'. Selecciona una vacante en la interfaz.")
+        sys.exit(1)
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception as e:
+        print(f"Error al leer 'config_agente.json': {e}")
+        sys.exit(1)
+
+    jd = cfg.get("jd_actual", "").strip()
+    role = cfg.get("pestana_activa", "Sin especificar")
+    if not jd:
+        print(f"Error: No hay ninguna JD guardada para '{role}' en config_agente.json.")
+        sys.exit(1)
+
+    return jd, role
 
 # -------------------------------------------------------------------------
 # 2.- Prompt para la consulta
 # -------------------------------------------------------------------------
 
-INSTRUCCIONES_CVMATCH = """
-Actúa como un Technical Recruiter Senior especializado en perfiles Full Stack .NET + Security Remediation. Tu tarea es evaluar un CV contra el siguiente perfil de vacante y devolver un análisis estructurado con un porcentaje de match objetivo.
+PLANTILLA_PROMPT = """
+Actúa como un Technical Recruiter Senior. Tu tarea es evaluar un CV contra la descripción de la vacante (JD) proporcionada abajo y devolver un análisis estructurado con un porcentaje de match objetivo.
 
-=== PERFIL DE LA VACANTE ===
+=== DESCRIPCIÓN DE LA VACANTE (JD) ===
 
-Rol: Full Stack Developer + Security Remediation
-Ubicación: Colombia (OBLIGATORIO — candidatos fuera de Colombia se descartan automáticamente)
-Experiencia mínima: 3+ años de desarrollo profesional
-
-RESPONSABILIDADES CLAVE:
-- Identificar, diagnosticar y remediar vulnerabilidades de seguridad en aplicaciones .NET y React, dependencias e infraestructura cloud.
-- Resolver vulnerabilidades críticas en SLA de 24 horas.
-- Desarrollar, modificar y mantener código para resolver issues de seguridad y defectos productivos.
-- Troubleshooting de aplicaciones desplegadas en Azure Kubernetes Service (AKS).
-- Implementar y desplegar fixes a producción garantizando estabilidad y seguridad.
-- Colaborar con equipos de ingeniería y ciberseguridad.
-- Soportar releases de producción (ocasionalmente noches o fines de semana).
-- Asistir con testing automatizado de regresión cuando no haya remediación.
-
-ORDEN DE PRIORIDAD (pesos sugeridos):
-1. C#/.NET — 25%
-2. React — 20%
-3. AKS / Kubernetes — 20%
-4. Vulnerability Remediation — 15%
-5. Production Support — 10%
-6. Experiencia 3+ años — 10% (gate obligatorio)
-
-NICE TO HAVE (bonus, máximo +5% adicional):
-- React Native
-- Servicios adicionales de Microsoft Azure
-- QA testing / frameworks de regresión
-- Herramientas de vulnerability scanning y reporting
-- Experiencia en entornos Agile
-
-FILTROS ELIMINATORIOS (knock-out):
-- ❌ No reside en Colombia → Match = 0%
-- ❌ Menos de 3 años de experiencia profesional → Match = 0%
-- ❌ Sin evidencia de C#/.NET en el CV → Match ≤ 30%
+{jd_texto}
 
 === INSTRUCCIONES DE EVALUACIÓN ===
 
-1. Lee el CV completo antes de puntuar.
-2. Para cada categoría, asigna un score de 0 a 100 basado en evidencia explícita del CV.
-3. No asumas habilidades no evidenciadas — si no aparece, se puntúa como 0.
-4. Diferencia entre uso superficial y experiencia hands-on demostrable (proyectos, roles, responsabilidades descritas).
-5. Calcula el Match final aplicando la fórmula:
-   Match% = (C#/.NET × 0.25) + (React × 0.20) + (AKS × 0.20) + (Vulnerability Remediation × 0.15) + (Production Support × 0.10) + (Años exp. × 0.10) + bonus
-6. Si se dispara un filtro eliminatorio, el Match final es 0% o ≤30% según corresponda y debes indicarlo claramente.
+1. Lee la JD y el CV completo antes de puntuar.
+2. Identifica los requisitos obligatorios, ubicación requerida, años de experiencia y el orden de prioridad o pesos indicados en la JD. Si la JD no especifica porcentajes exactos, distribuye el 100% proporcionalmente según el orden de prioridad de las tecnologías y responsabilidades descritas.
+3. Para cada requisito, asigna un score de 0 a 100 basado únicamente en evidencia explícita del CV.
+4. No asumas habilidades no evidenciadas — si no aparece en el CV, se puntúa como 0.
+5. Diferencia entre mención superficial y experiencia hands-on demostrable (proyectos, roles, responsabilidades descritas).
+6. FILTROS ELIMINATORIOS (knock-out):
+   - Si la JD exige un país/ubicación obligatoria y el candidato reside fuera → Match = 0%
+   - Si no cumple con los años mínimos de experiencia exigidos → Match = 0%
+   - Si carece de la tecnología principal #1 de la vacante → Match ≤ 30%
+7. Calcula el Match final ponderado (más hasta +5% de bonus si cumple con los Nice-to-Have, sin superar 100%) e indica si se disparó algún filtro eliminatorio.
 
 === FORMATO DE SALIDA REQUERIDO ===
 
 **1. VEREDICTO RÁPIDO**
 - Match total: XX%
 
+**2. DESGLOSE POR REQUISITO**
+- Resume brevemente los puntos fuertes, brechas y cumplimiento de filtros obligatorios.
+
 === CV A EVALUAR ===
 """
 
 # -------------------------------------------------------------------------
-# 3.- Hace la consulta a openai
+# 4.- Consultar a OpenAI
 # -------------------------------------------------------------------------
 
 MODELO = "gpt-4o-mini-2024-07-18"
@@ -86,15 +86,18 @@ def evaluar_cv_con_openai():
         print("Error: El portapapeles está vacío. No hay CV para evaluar.")
         sys.exit(1)
 
+    jd_texto, role = obtener_jd_activa()
+    prompt_sistema = PLANTILLA_PROMPT.format(jd_texto=jd_texto)
+
     client = OpenAI(api_key=OPENAI_API_KEY)
 
     print(f"Consultando a {MODELO}...")
     try:
         respuesta = client.chat.completions.create(
             model=MODELO,
-            temperature=0.1,  # Baja temperatura para evaluaciones consistentes y precisas
+            temperature=0.1,
             messages=[
-                {"role": "system", "content": INSTRUCCIONES_CVMATCH},
+                {"role": "system", "content": prompt_sistema},
                 {"role": "user", "content": f"Analiza este CV:\n\n{texto_cv}"}
             ]
         )

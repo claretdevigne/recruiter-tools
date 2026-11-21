@@ -1,13 +1,21 @@
 import os
 import sys
+import json
 import time
 import pyautogui
 import pyperclip
 
+# Permitir importar desde la raíz del proyecto para consultar AGENTE_DB si hiciera falta
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(BASE_DIR)
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+from googlesheetsapi.functions import listar_hojas_y_pestanas
+
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.1
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMG_CONECTAR = os.path.join(BASE_DIR, "1.png")      # Botón directo Conectar
 IMG_ANADIR_NOTA = os.path.join(BASE_DIR, "2.png")   # Botón Añadir nota en el modal
 IMG_SEGUIR = os.path.join(BASE_DIR, "3.png")        # Botón Seguir
@@ -15,16 +23,58 @@ IMG_TRES_PUNTOS = os.path.join(BASE_DIR, "4.png")   # Botón Más / 3 puntos
 IMG_CONECTAR_MENU = os.path.join(BASE_DIR, "5.png") # Opción Conectar dentro del desplegable
 IMG_ENVIAR = os.path.join(BASE_DIR, "6.png")        # Botón azul "Enviar" del modal
 
-MENSAJE = (
-    "¡Hola! Te invito a participar como Vulnerability Remediation Developer "
-    "(remoto en Colombia, contractor, presupuesto hasta $4,300 USD/mes). Buscamos +3 años "
-    "de experiencia en C#/.NET, React, AKS, remediación de vulnerabilidades y soporte en "
-    "producción. ¿Te interesa? Envíame tu CV."
-)
-
 
 def log(mensaje: str):
     print(mensaje, flush=True)
+
+
+def obtener_mensaje_agente_db() -> str:
+    """
+    Obtiene estrictamente el mensaje correspondiente al Role activo en AGENTE_DB.
+    Primero revisa el caché local (config_agente.json) y, si está vacío, consulta Google Sheets directamente.
+    """
+    config_path = os.path.join(ROOT_DIR, "config_agente.json")
+    cfg = {}
+
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception as e:
+            log(f"[Aviso] Error leyendo config_agente.json: {e}")
+
+    hoja_activa = cfg.get("hoja_activa", "")
+    role_activo = cfg.get("pestana_activa", "")
+
+    # 1. Intentar leer desde la tabla sincronizada de AGENTE_DB en config_agente.json
+    vacantes_cache = cfg.get("hojas", {}).get(hoja_activa, {}).get("vacantes", {})
+    mensaje = vacantes_cache.get(role_activo, {}).get("mensaje", "").strip()
+    if mensaje:
+        return mensaje
+
+    # 2. Respaldo directo: leer mensaje_actual si está presente
+    mensaje_actual = cfg.get("mensaje_actual", "").strip()
+    if mensaje_actual:
+        return mensaje_actual
+
+    # 3. Último recurso: consultar AGENTE_DB en vivo desde Google Sheets
+    if hoja_activa and role_activo:
+        log(f"[Config] Consultando AGENTE_DB en vivo para '{role_activo}'...")
+        try:
+            datos_sheets = listar_hojas_y_pestanas()
+            mensaje_vivo = (
+                datos_sheets.get(hoja_activa, {})
+                .get("vacantes", {})
+                .get(role_activo, {})
+                .get("mensaje", "")
+                .strip()
+            )
+            if mensaje_vivo:
+                return mensaje_vivo
+        except Exception as e:
+            log(f"[Error] No se pudo consultar AGENTE_DB en vivo: {e}")
+
+    return ""
 
 
 def buscar_imagen(ruta_imagen: str, confianza: float = 0.7):
@@ -168,13 +218,13 @@ def flujo_seguir_menu(tiempo_max: int = 60):
 # -------------------------------------------------------------------------
 # 3.- Pega el mensaje, verifica que esté dentro del cuadro y hace clic en Enviar (6.png)
 # -------------------------------------------------------------------------
-def paso_final_pegar_y_enviar(ubicacion_2, max_intentos_pegado: int = 3) -> bool:
+def paso_final_pegar_y_enviar(ubicacion_2, mensaje_texto: str, max_intentos_pegado: int = 3) -> bool:
     log("[Paso Final] Esperando 1.5s a que abra el cuadro de texto...")
     time.sleep(1.5)
 
     x_textarea = ubicacion_2.x
     y_textarea = ubicacion_2.y - 100
-    mensaje_esperado = MENSAJE[:300].strip()
+    mensaje_esperado = mensaje_texto[:300].strip()
 
     texto_verificado = False
 
@@ -184,21 +234,18 @@ def paso_final_pegar_y_enviar(ubicacion_2, max_intentos_pegado: int = 3) -> bool
         pyautogui.click()
         time.sleep(0.2)
 
-        # Limpiar por si quedó algo previo y pegar
         pyautogui.hotkey('ctrl', 'a')
         time.sleep(0.1)
         pyperclip.copy(mensaje_esperado)
         pyautogui.hotkey('ctrl', 'v')
         time.sleep(0.3)
 
-        # Seleccionar y copiar lo que realmente quedó dentro del textarea
         pyperclip.copy("")
         pyautogui.hotkey('ctrl', 'a')
         time.sleep(0.1)
         pyautogui.hotkey('ctrl', 'c')
         time.sleep(0.2)
 
-        # Quitar el sombreado azul haciendo clic al final del texto (flecha derecha)
         pyautogui.press('right')
 
         contenido_actual = pyperclip.paste().strip()
@@ -215,7 +262,6 @@ def paso_final_pegar_y_enviar(ubicacion_2, max_intentos_pegado: int = 3) -> bool
         log("[Paso Final] FALLO - No se pudo verificar que el texto se pegara. No se enviará.")
         return False
 
-    # Buscar botón azul Enviar (6.png) y hacer clic
     log("[Paso Final] Buscando botón Enviar (6.png)...")
     inicio = time.time()
     while time.time() - inicio < 10:
@@ -238,12 +284,19 @@ def paso_final_pegar_y_enviar(ubicacion_2, max_intentos_pegado: int = 3) -> bool
 # -------------------------------------------------------------------------
 def main() -> bool:
     log("==========================================")
-    log(f"INICIANDO linkedin.py | Carpeta base: {BASE_DIR}")
+    log(f"INICIANDO contactar/main.py | Carpeta base: {BASE_DIR}")
 
     for ruta in (IMG_CONECTAR, IMG_ANADIR_NOTA, IMG_SEGUIR, IMG_TRES_PUNTOS, IMG_CONECTAR_MENU, IMG_ENVIAR):
         if not os.path.exists(ruta):
             log(f"ERROR CRÍTICO: Falta el archivo '{ruta}'")
             return False
+
+    mensaje_activo = obtener_mensaje_agente_db()
+    if not mensaje_activo:
+        log("ERROR CRÍTICO: No hay ningún mensaje configurado en AGENTE_DB para la pestaña activa. Abortando envío.")
+        return False
+
+    log(f"[Config AGENTE_DB] Mensaje cargado ({len(mensaje_activo[:300])} chars): {mensaje_activo[:60]}...")
 
     tipo_perfil, ubicacion_detectada = paso_1_detectar_tipo_perfil(tiempo_max=120, intervalo_cambio=5)
     if tipo_perfil is None:
@@ -257,7 +310,7 @@ def main() -> bool:
     if ubicacion_2 is None:
         return False
 
-    if not paso_final_pegar_y_enviar(ubicacion_2):
+    if not paso_final_pegar_y_enviar(ubicacion_2, mensaje_activo):
         return False
 
     log("==========================================")
@@ -266,5 +319,5 @@ def main() -> bool:
 
 if __name__ == "__main__":
     exito = main()
-    log(f"FIN linkedin.py | Resultado: {'EXITO (0)' if exito else 'FALLO (1)'}")
+    log(f"FIN contactar/main.py | Resultado: {'EXITO (0)' if exito else 'FALLO (1)'}")
     sys.exit(0 if exito else 1)

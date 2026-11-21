@@ -1,90 +1,66 @@
 import sys
-import time
-import pyautogui
-import pyperclip
+import os
+import gspread
 
-columna_checks = "A"
-columna_porcentajes = "B"
-columna_links = "C"
+SHEET_ID = "1IgctcXouhK3QRIO-4LDhf4uTOWV8XuM-M7omzqowF6Y"
+NOMBRE_PESTANA = "Full_Stack_Security"
+UMBRAL_MATCH = 85.0
 
-# Failsafe: mueve el mouse rápido a la esquina superior izquierda para abortar
-pyautogui.FAILSAFE = True
-pyautogui.PAUSE = 0.1
-
-# Coordenada dentro de la ventana de Chrome para enfocarla
-X_CHROME = 500
-Y_CHROME = 300
+# Índices de columna en base 0 (A=0, B=1, C=2...)
+IDX_CHECK = 0       # Columna A
+IDX_PORCENTAJE = 1  # Columna B
+# IDX_LINK = 2      # Columna C
 
 
 def revisar_filas(fila_inicio: int) -> int | None:
-    time.sleep(3)
+    ruta_json = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credentials.json")
+    gc = gspread.service_account(filename=ruta_json)
 
-    # 1. Enfocar Chrome e ir a la pestaña 1 (Ctrl + 1)
-    pyautogui.click(X_CHROME, Y_CHROME)
-    pyautogui.hotkey('ctrl', '1')
-    time.sleep(0.5)
+    doc = gc.open_by_key(SHEET_ID)
+    hoja = doc.worksheet(NOMBRE_PESTANA)
+
+    # Descarga toda la tabla en una sola petición (evita cientos de llamadas individuales)
+    todas_las_filas = hoja.get_all_values()
 
     max_filas = 500
+    limite_superior = min(len(todas_las_filas), fila_inicio - 1 + max_filas)
 
-    for fila in range(fila_inicio, fila_inicio + max_filas):
-        celda_porcentaje = f"{columna_porcentajes}{fila}"
+    # Iterar desde fila_inicio (ajustando índice 1-based de Sheets a 0-based de Python)
+    for idx in range(fila_inicio - 1, limite_superior):
+        fila_actual = todas_las_filas[idx]
+        numero_fila_sheet = idx + 1
 
-        # 2. Ir directo a la celda de porcentaje (B{fila}) con Ctrl + J
-        pyautogui.hotkey('ctrl', 'j')
-        time.sleep(0.15)
-        pyautogui.write(celda_porcentaje)
-        pyautogui.press('enter')
-        time.sleep(0.15)
+        # Obtener valor de porcentaje (Columna B) de forma segura
+        texto_pct = fila_actual[IDX_PORCENTAJE].strip() if len(fila_actual) > IDX_PORCENTAJE else ""
 
-        # 3. Copiar valor de la celda B{fila}
-        pyperclip.copy("")
-        pyautogui.hotkey('ctrl', 'c')
-        time.sleep(0.15)
-
-        texto = pyperclip.paste().strip()
-
-        # Si la celda de porcentaje está vacía, termina la búsqueda
-        if not texto:
+        # Si la celda de porcentaje está vacía, termina la búsqueda (misma lógica original)
+        if not texto_pct:
             return None
 
-        valor_limpio = texto.replace('%', '').replace(',', '.').strip()
+        valor_limpio = texto_pct.replace("%", "").replace(",", ".").strip()
 
         try:
             numero = float(valor_limpio)
 
-            # Descomenta si copia como decimal (ej. 0.85 en lugar de 85%):
+            # Descomenta si se guarda como decimal (ej. 0.85 en lugar de 85%):
             # if 0 < numero <= 1: numero *= 100
 
-            if numero >= 85:
-                # 4. Revisar si A{fila} tiene una "X" o está vacía
-                celda_check = f"{columna_checks}{fila}"
-                pyautogui.hotkey('ctrl', 'j')
-                time.sleep(0.15)
-                pyautogui.write(celda_check)
-                pyautogui.press('enter')
-                time.sleep(0.15)
+            if numero >= UMBRAL_MATCH:
+                # Revisar si la columna A (Check) está vacía
+                valor_check = fila_actual[IDX_CHECK].strip().upper() if len(fila_actual) > IDX_CHECK else ""
 
-                pyperclip.copy("")
-                pyautogui.hotkey('ctrl', 'c')
-                time.sleep(0.15)
-
-                valor_check = pyperclip.paste().strip().upper()
-
-                # Si está vacía (no hay "X"), devuelve esta fila
                 if valor_check == "":
-                    return fila
-                # Si tiene "X" (o cualquier marca), el ciclo continúa solo
+                    return numero_fila_sheet
 
         except ValueError:
-            pass
+            # Ignora encabezados o celdas con texto no numérico (ej. "N/A")
+            continue
 
     return None
 
 
 if __name__ == "__main__":
-    # Leer fila inicial desde argv (si no se pasa argumento, empieza en 1)
     fila_inicial = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-
     fila_encontrada = revisar_filas(fila_inicial)
 
     if fila_encontrada is not None:
